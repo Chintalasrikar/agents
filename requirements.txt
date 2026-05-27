@@ -9,3 +9,7 @@ google-auth-httplib2
 
 tiktoken
 python-dotenv
+
+
+fastapi
+uvicorn

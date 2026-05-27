@@ -1,50 +1,20 @@
-from typing import TypedDict
-from langgraph.graph import StateGraph, END
-from email.utils import parseaddr
-
-
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-
-from langchain_groq import ChatGroq
-from dotenv import load_dotenv
-
+import base64
 import os
 import pickle
-import base64
+from email.utils import parseaddr
+from typing import Optional, TypedDict
 
-# -----------------------------
-# Gmail Authentication
-# -----------------------------
+from dotenv import load_dotenv
+from fastapi import APIRouter, HTTPException
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from langchain_groq import ChatGroq
+from pydantic import BaseModel
 
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.modify"
-]
+router = APIRouter(prefix="/email-agent", tags=["email-agent"])
 
-def gmail_authenticate():
-    creds = None
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
-    if os.path.exists("token.pickle"):
-        with open("token.pickle", "rb") as token:
-            creds = pickle.load(token)
-
-    if not creds or not creds.valid:
-        flow = InstalledAppFlow.from_client_secrets_file(
-            "email_credentials.json",
-            SCOPES
-        )
-
-        creds = flow.run_local_server(port=0)
-
-        with open("token.pickle", "wb") as token:
-            pickle.dump(creds, token)
-
-    return build("gmail", "v1", credentials=creds)
-
-# -----------------------------
-# LangGraph State
-# -----------------------------
 
 class EmailState(TypedDict):
     email_body: str
@@ -54,97 +24,116 @@ class EmailState(TypedDict):
     message_id: str
     reply: str
 
-# -----------------------------
-# Read Email Tool
-# -----------------------------
 
-def read_latest_email(state):
+class ReplyPreviewResponse(BaseModel):
+    sender: str
+    subject: str
+    thread_id: str
+    message_id: str
+    email_body: str
+    reply: str
+
+
+class SendReplyRequest(BaseModel):
+    sender: str
+    subject: str
+    thread_id: str = ""
+    message_id: str = ""
+    reply: str
+
+
+class SendReplyResponse(BaseModel):
+    status: str
+    gmail_message_id: str
+
+
+def gmail_authenticate():
+    creds = None
+    if os.path.exists("token.pickle"):
+        with open("token.pickle", "rb") as token:
+            creds = pickle.load(token)
+
+    if not creds or not creds.valid:
+        flow = InstalledAppFlow.from_client_secrets_file("email_credentials.json", SCOPES)
+        creds = flow.run_local_server(port=0)
+        with open("token.pickle", "wb") as token:
+            pickle.dump(creds, token)
+
+    return build("gmail", "v1", credentials=creds)
+
+
+def get_llm() -> ChatGroq:
+    load_dotenv()
+    model_name = (os.getenv("MODEL") or "").strip()
+    groq_api_key = (os.getenv("GROQ_API_KEY") or "").strip()
+
+    if not model_name:
+        raise HTTPException(status_code=500, detail="Missing MODEL in environment.")
+    if not groq_api_key:
+        raise HTTPException(status_code=500, detail="Missing GROQ_API_KEY in environment.")
+
+    return ChatGroq(model=model_name, api_key=groq_api_key)
+
+
+def extract_plain_text(part: dict) -> str:
+    mime_type = part.get("mimeType", "")
+    body_data = part.get("body", {}).get("data")
+
+    if mime_type == "text/plain" and body_data:
+        return base64.urlsafe_b64decode(body_data).decode("utf-8", errors="ignore")
+
+    for subpart in part.get("parts", []):
+        text = extract_plain_text(subpart)
+        if text:
+            return text
+    return ""
+
+
+def read_latest_email() -> Optional[EmailState]:
     service = gmail_authenticate()
-
-    results = service.users().messages().list(
-        userId='me',
-        labelIds=['INBOX'],
-        maxResults=1
-    ).execute()
-
-    messages = results.get('messages', [])
+    results = service.users().messages().list(userId="me", labelIds=["INBOX"], maxResults=1).execute()
+    messages = results.get("messages", [])
 
     if not messages:
-        print("No messages found.")
-        return state
+        return None
 
-    msg = service.users().messages().get(
-        userId='me',
-        id=messages[0]['id']
-    ).execute()
-
-    payload = msg['payload']
-    headers = payload['headers']
+    msg = service.users().messages().get(userId="me", id=messages[0]["id"]).execute()
+    payload = msg.get("payload", {})
+    headers = payload.get("headers", [])
 
     sender = ""
     subject = ""
     message_id = ""
 
-    for h in headers:
-        if h['name'] == 'From':
-            sender = h['value']
-        if h['name'] == 'Subject':
-            subject = h['value']
-        if h['name'] == 'Message-ID':
-            message_id = h['value']
-
-    def extract_plain_text(part):
-        mime_type = part.get("mimeType", "")
-        body_data = part.get("body", {}).get("data")
-
-        if mime_type == "text/plain" and body_data:
-            return base64.urlsafe_b64decode(body_data).decode("utf-8", errors="ignore")
-
-        for subpart in part.get("parts", []):
-            text = extract_plain_text(subpart)
-            if text:
-                return text
-        return ""
+    for header in headers:
+        name = header.get("name", "")
+        value = header.get("value", "")
+        if name == "From":
+            sender = value
+        elif name == "Subject":
+            subject = value
+        elif name == "Message-ID":
+            message_id = value
 
     body = extract_plain_text(payload)
-
-    print("\\nEMAIL RECEIVED:")
-    print(body)
 
     return {
         "email_body": body,
         "sender": sender,
         "subject": subject,
         "thread_id": msg.get("threadId", ""),
-        "message_id": message_id
+        "message_id": message_id,
+        "reply": "",
     }
 
-# -----------------------------
-# AI Reply Generator
-# -----------------------------
 
-load_dotenv()
-
-model_name = (os.getenv("MODEL") or "").strip()
-groq_api_key = (os.getenv("GROQ_API_KEY") or "").strip()
-
-if not model_name:
-    raise ValueError(
-        "Missing MODEL in environment. Add MODEL to .env, e.g. MODEL=llama-3.3-70b-versatile"
-    )
-
-if not groq_api_key:
-    raise ValueError("Missing GROQ_API_KEY in environment. Add it to .env.")
-
-llm = ChatGroq(model=model_name, api_key=groq_api_key)
-
-def generate_reply(state):
+def generate_reply(state: EmailState) -> str:
+    llm = get_llm()
     sender_name = parseaddr(state.get("sender", ""))[0] or "there"
     clean_subject = state.get("subject", "").strip() or "your email"
 
     prompt = f"""
 You are an AI email assistant.
-
 Write a concise, natural reply to the email below.
 
 Rules:
@@ -165,89 +154,58 @@ Original email body:
     if reply_text.lower().startswith("subject:"):
         reply_text = reply_text.split("\n", 1)[1].strip() if "\n" in reply_text else reply_text
 
-    print("\\nAI REPLY:")
-    print(reply_text)
+    return reply_text
 
-    return {
-        "reply": reply_text
-    }
 
-# -----------------------------
-# Send Email Tool
-# -----------------------------
-
-def send_reply(state):
-    print("\n==============================")
-    print("AI GENERATED REPLY:")
-    print("==============================\n")
-
-    print(state["reply"])
-
-    print("\n==============================")
-
-    approval = input("Send this reply? (y/n): ")
-
-    if approval.lower() != "y":
-        print("\nEmail sending cancelled.")
-        return state
-
+def send_reply_email(state: SendReplyRequest) -> str:
     service = gmail_authenticate()
+    original_subject = state.subject.strip()
 
-    original_subject = state.get("subject", "").strip()
     if original_subject.lower().startswith("re:"):
         reply_subject = original_subject
     else:
         reply_subject = f"Re: {original_subject}" if original_subject else "Re: Your Email"
 
     headers = [
-        f"To: {state['sender']}",
+        f"To: {state.sender}",
         f"Subject: {reply_subject}",
     ]
 
-    if state.get("message_id"):
-        headers.append(f"In-Reply-To: {state['message_id']}")
-        headers.append(f"References: {state['message_id']}")
+    if state.message_id:
+        headers.append(f"In-Reply-To: {state.message_id}")
+        headers.append(f"References: {state.message_id}")
 
-    message = "\n".join(headers) + f"\n\n{state['reply']}\n"
+    message = "\n".join(headers) + f"\n\n{state.reply}\n"
+    encoded_message = base64.urlsafe_b64encode(message.encode("utf-8")).decode("utf-8")
+
+    create_message = {"raw": encoded_message}
+    if state.thread_id:
+        create_message["threadId"] = state.thread_id
+
+    sent = service.users().messages().send(userId="me", body=create_message).execute()
+    return sent.get("id", "")
 
 
-    encoded_message = base64.urlsafe_b64encode(
-        message.encode("utf-8")
-    ).decode("utf-8")
+@router.post("/reply-latest", response_model=ReplyPreviewResponse)
+def reply_latest_email():
+    state = read_latest_email()
+    if not state:
+        raise HTTPException(status_code=404, detail="No messages found in inbox.")
 
-    create_message = {'raw': encoded_message}
-    if state.get("thread_id"):
-        create_message["threadId"] = state["thread_id"]
+    reply = generate_reply(state)
+    state["reply"] = reply
 
-    send_message = service.users().messages().send(
-        userId="me",
-        body=create_message
-    ).execute()
+    return ReplyPreviewResponse(
+        sender=state["sender"],
+        subject=state["subject"],
+        thread_id=state["thread_id"],
+        message_id=state["message_id"],
+        email_body=state["email_body"],
+        reply=state["reply"],
+    )
 
-    print("\nEMAIL SENT SUCCESSFULLY!")
 
-    return state
-
-# -----------------------------
-# LangGraph Workflow
-# -----------------------------
-
-workflow = StateGraph(EmailState)
-
-workflow.add_node("read_email", read_latest_email)
-workflow.add_node("generate_reply", generate_reply)
-workflow.add_node("send_reply", send_reply)
-
-workflow.set_entry_point("read_email")
-
-workflow.add_edge("read_email", "generate_reply")
-workflow.add_edge("generate_reply", "send_reply")
-workflow.add_edge("send_reply", END)
-
-app = workflow.compile()
-
-# -----------------------------
-# Run Agent
-# -----------------------------
-
-app.invoke({})
+@router.post("/send-reply", response_model=SendReplyResponse)
+def send_reply(payload: SendReplyRequest):
+    message_id = send_reply_email(payload)
+    return SendReplyResponse(status="sent", gmail_message_id=message_id)
