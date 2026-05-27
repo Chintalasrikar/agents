@@ -2,13 +2,14 @@ import base64
 import os
 import pickle
 from email.utils import parseaddr
-from typing import Optional, TypedDict
+from typing import Literal, Optional, TypedDict
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from langchain_groq import ChatGroq
+from langgraph.graph import END, StateGraph
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/email-agent", tags=["email-agent"])
@@ -23,15 +24,26 @@ class EmailState(TypedDict):
     thread_id: str
     message_id: str
     reply: str
+    auto_send: bool
+    sent: bool
+    send_status: str
+    gmail_message_id: str
 
 
-class ReplyPreviewResponse(BaseModel):
+class RunAgentRequest(BaseModel):
+    auto_send: bool = False
+
+
+class AgentRunResponse(BaseModel):
     sender: str
     subject: str
     thread_id: str
     message_id: str
     email_body: str
     reply: str
+    sent: bool
+    send_status: str
+    gmail_message_id: str
 
 
 class SendReplyRequest(BaseModel):
@@ -89,13 +101,13 @@ def extract_plain_text(part: dict) -> str:
     return ""
 
 
-def read_latest_email() -> Optional[EmailState]:
+def read_latest_email_node(state: EmailState):
     service = gmail_authenticate()
     results = service.users().messages().list(userId="me", labelIds=["INBOX"], maxResults=1).execute()
     messages = results.get("messages", [])
 
     if not messages:
-        return None
+        raise HTTPException(status_code=404, detail="No messages found in inbox.")
 
     msg = service.users().messages().get(userId="me", id=messages[0]["id"]).execute()
     payload = msg.get("payload", {})
@@ -123,11 +135,13 @@ def read_latest_email() -> Optional[EmailState]:
         "subject": subject,
         "thread_id": msg.get("threadId", ""),
         "message_id": message_id,
-        "reply": "",
+        "sent": False,
+        "send_status": "not_sent",
+        "gmail_message_id": "",
     }
 
 
-def generate_reply(state: EmailState) -> str:
+def generate_reply_node(state: EmailState):
     llm = get_llm()
     sender_name = parseaddr(state.get("sender", ""))[0] or "there"
     clean_subject = state.get("subject", "").strip() or "your email"
@@ -146,7 +160,7 @@ Rules:
 
 Original subject: {clean_subject}
 Original email body:
-{state['email_body']}
+{state.get('email_body', '')}
 """
 
     response = llm.invoke(prompt)
@@ -154,58 +168,105 @@ Original email body:
     if reply_text.lower().startswith("subject:"):
         reply_text = reply_text.split("\n", 1)[1].strip() if "\n" in reply_text else reply_text
 
-    return reply_text
+    return {"reply": reply_text}
 
 
-def send_reply_email(state: SendReplyRequest) -> str:
+def send_reply_email(sender: str, subject: str, thread_id: str, message_id: str, reply: str) -> str:
     service = gmail_authenticate()
-    original_subject = state.subject.strip()
-
-    if original_subject.lower().startswith("re:"):
-        reply_subject = original_subject
-    else:
-        reply_subject = f"Re: {original_subject}" if original_subject else "Re: Your Email"
+    original_subject = subject.strip()
+    reply_subject = original_subject if original_subject.lower().startswith("re:") else f"Re: {original_subject}" if original_subject else "Re: Your Email"
 
     headers = [
-        f"To: {state.sender}",
+        f"To: {sender}",
         f"Subject: {reply_subject}",
     ]
 
-    if state.message_id:
-        headers.append(f"In-Reply-To: {state.message_id}")
-        headers.append(f"References: {state.message_id}")
+    if message_id:
+        headers.append(f"In-Reply-To: {message_id}")
+        headers.append(f"References: {message_id}")
 
-    message = "\n".join(headers) + f"\n\n{state.reply}\n"
+    message = "\n".join(headers) + f"\n\n{reply}\n"
     encoded_message = base64.urlsafe_b64encode(message.encode("utf-8")).decode("utf-8")
 
     create_message = {"raw": encoded_message}
-    if state.thread_id:
-        create_message["threadId"] = state.thread_id
+    if thread_id:
+        create_message["threadId"] = thread_id
 
     sent = service.users().messages().send(userId="me", body=create_message).execute()
     return sent.get("id", "")
 
 
-@router.post("/reply-latest", response_model=ReplyPreviewResponse)
-def reply_latest_email():
-    state = read_latest_email()
-    if not state:
-        raise HTTPException(status_code=404, detail="No messages found in inbox.")
-
-    reply = generate_reply(state)
-    state["reply"] = reply
-
-    return ReplyPreviewResponse(
-        sender=state["sender"],
-        subject=state["subject"],
-        thread_id=state["thread_id"],
-        message_id=state["message_id"],
-        email_body=state["email_body"],
-        reply=state["reply"],
+def send_reply_node(state: EmailState):
+    message_id = send_reply_email(
+        sender=state.get("sender", ""),
+        subject=state.get("subject", ""),
+        thread_id=state.get("thread_id", ""),
+        message_id=state.get("message_id", ""),
+        reply=state.get("reply", ""),
     )
+    return {"sent": True, "send_status": "sent", "gmail_message_id": message_id}
+
+
+def route_after_generate(state: EmailState) -> Literal["send_reply", END]:
+    return "send_reply" if state.get("auto_send") else END
+
+
+workflow = StateGraph(EmailState)
+workflow.add_node("read_latest_email", read_latest_email_node)
+workflow.add_node("generate_reply", generate_reply_node)
+workflow.add_node("send_reply", send_reply_node)
+workflow.set_entry_point("read_latest_email")
+workflow.add_edge("read_latest_email", "generate_reply")
+workflow.add_conditional_edges("generate_reply", route_after_generate)
+workflow.add_edge("send_reply", END)
+agent_graph = workflow.compile()
+
+
+@router.post("/run", response_model=AgentRunResponse)
+def run_agent(payload: RunAgentRequest):
+    result = agent_graph.invoke(
+        {
+            "email_body": "",
+            "sender": "",
+            "subject": "",
+            "thread_id": "",
+            "message_id": "",
+            "reply": "",
+            "auto_send": payload.auto_send,
+            "sent": False,
+            "send_status": "not_sent",
+            "gmail_message_id": "",
+        }
+    )
+    return AgentRunResponse(**result)
+
+
+@router.post("/reply-latest", response_model=AgentRunResponse)
+def reply_latest_email():
+    result = agent_graph.invoke(
+        {
+            "email_body": "",
+            "sender": "",
+            "subject": "",
+            "thread_id": "",
+            "message_id": "",
+            "reply": "",
+            "auto_send": False,
+            "sent": False,
+            "send_status": "not_sent",
+            "gmail_message_id": "",
+        }
+    )
+    return AgentRunResponse(**result)
 
 
 @router.post("/send-reply", response_model=SendReplyResponse)
 def send_reply(payload: SendReplyRequest):
-    message_id = send_reply_email(payload)
+    message_id = send_reply_email(
+        sender=payload.sender,
+        subject=payload.subject,
+        thread_id=payload.thread_id,
+        message_id=payload.message_id,
+        reply=payload.reply,
+    )
     return SendReplyResponse(status="sent", gmail_message_id=message_id)
