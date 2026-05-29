@@ -1,0 +1,71 @@
+﻿:root {
+  font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+  color: #0f172a;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at top left, #dbeafe, #f8fafc 60%);
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 22px;
+  background: #0b3b5e;
+  color: #fff;
+}
+
+.topbar nav a {
+  color: #dbeafe;
+  margin-left: 14px;
+  text-decoration: none;
+}
+
+.container {
+  max-width: 760px;
+  margin: 28px auto;
+  padding: 0 16px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+
+label {
+  display: block;
+  margin-top: 12px;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+button {
+  margin-top: 16px;
+  background: #0b3b5e;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #334155;
+  margin-left: 10px;
+}
+
+.ok { color: #166534; }
+.err { color: #b91c1c; }
+.hint { color: #475569; }
