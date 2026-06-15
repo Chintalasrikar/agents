@@ -7,11 +7,17 @@ import { RouterLink, RouterOutlet } from '@angular/router';
   imports: [RouterOutlet, RouterLink],
   template: `
     <header class="topbar">
-      <h1>News Agent</h1>
+      <div class="brand">
+        <span class="brand-mark">AG</span>
+        <div>
+          <h1>Agent Studio</h1>
+          <p>News + Cold Email workflows</p>
+        </div>
+      </div>
       <nav>
+        <a routerLink="/dashboard">Dashboard</a>
         <a routerLink="/signin">Sign In</a>
         <a routerLink="/signup">Sign Up</a>
-        <a routerLink="/profile">Profile</a>
       </nav>
     </header>
     <main class="container">

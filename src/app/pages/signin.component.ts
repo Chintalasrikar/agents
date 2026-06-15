@@ -48,7 +48,7 @@ export class SignInComponent {
       next: (res) => {
         this.auth.setToken(res.access_token);
         this.loading = false;
-        this.router.navigateByUrl('/profile');
+        this.router.navigateByUrl('/dashboard');
       },
       error: (err) => {
         this.error = err?.error?.detail || 'Invalid credentials.';
