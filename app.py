@@ -212,6 +212,12 @@ def get_current_email(credentials: HTTPAuthorizationCredentials = Depends(securi
 
 @app.on_event("startup")
 def startup() -> None:
+    # Create required directories
+    from pathlib import Path
+    for dir_name in ["logs", "resumes"]:
+        Path(dir_name).mkdir(exist_ok=True)
+        logger.info(f"Ensured directory exists: {dir_name}")
+    
     setup_logging()
     init_db()
     init_cold_email_db_tables()

@@ -28,6 +28,13 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     PdfReader = None
 
+try:
+    from auth_utils import load_gmail_service_from_env, get_credentials_json_from_env
+except ImportError:
+    # Fallback for when auth_utils is not available
+    load_gmail_service_from_env = None
+    get_credentials_json_from_env = None
+
 load_dotenv()
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
@@ -451,6 +458,16 @@ def revise_cold_email_draft(
 
 
 def load_gmail_service() -> Any:
+    """Load Gmail service with environment variables support for deployment."""
+    
+    # Try environment variables first (for production deployment)
+    if load_gmail_service_from_env:
+        try:
+            return load_gmail_service_from_env("cold_email")
+        except Exception as e:
+            logging.warning("Failed to load Gmail service from env vars: %s", e)
+    
+    # Fallback to file-based authentication (for local development)
     creds = None
     if TOKEN_FILE.exists():
         try:
@@ -463,10 +480,40 @@ def load_gmail_service() -> Any:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            cred_path = os.getenv("GMAIL_CREDENTIALS_FILE", "email_credentials.json")
-            flow = InstalledAppFlow.from_client_secrets_file(cred_path, SCOPES)
-            creds = flow.run_local_server(port=0)
-        TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+            # Try to get credentials from environment
+            cred_data = None
+            if get_credentials_json_from_env:
+                try:
+                    import tempfile
+                    cred_data = get_credentials_json_from_env()
+                    # Create temporary file for OAuth flow
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                        f.write(cred_data)
+                        temp_cred_path = f.name
+                    
+                    flow = InstalledAppFlow.from_client_secrets_file(temp_cred_path, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                    
+                    # Clean up temp file
+                    os.unlink(temp_cred_path)
+                except Exception as e:
+                    logging.error("Failed to create credentials from env: %s", e)
+                    
+            if not creds:
+                # Final fallback to local credentials file
+                cred_path = os.getenv("GMAIL_CREDENTIALS_FILE", "email_credentials.json")
+                if Path(cred_path).exists():
+                    flow = InstalledAppFlow.from_client_secrets_file(cred_path, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                else:
+                    raise RuntimeError(
+                        "No Gmail credentials available. Please set up environment variables "
+                        "or provide email_credentials.json file."
+                    )
+        
+        # Save credentials for future use (local development only)
+        if TOKEN_FILE.parent.exists():
+            TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
 
     return build("gmail", "v1", credentials=creds)
 
