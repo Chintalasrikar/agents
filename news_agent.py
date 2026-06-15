@@ -80,13 +80,13 @@ def get_db_connection():
     database_url = os.getenv("DATABASE_URL", "").strip()
     if database_url:
         return psycopg2.connect(database_url)
-    return psycopg2.connect(
-        host=os.getenv("PGHOST", "localhost"),
-        port=int(os.getenv("PGPORT", "5432")),
-        dbname=os.getenv("PGDATABASE", "news_agent"),
-        user=os.getenv("PGUSER", "postgres"),
-        password=os.getenv("PGPASSWORD", ""),
-    )
+    # return psycopg2.connect(
+    #     host=os.getenv("PGHOST", "localhost"),
+    #     port=int(os.getenv("PGPORT", "5432")),
+    #     dbname=os.getenv("PGDATABASE", "news_agent"),
+    #     user=os.getenv("PGUSER", "postgres"),
+    #     password=os.getenv("PGPASSWORD", ""),
+    # )
 
 
 def init_db() -> None:

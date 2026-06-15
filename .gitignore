@@ -221,3 +221,4 @@ __marimo__/
 email_credentials.json
 token.pickle
 .vscode/
+cold_email_token.json

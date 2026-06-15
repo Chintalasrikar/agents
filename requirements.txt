@@ -13,3 +13,5 @@ uvicorn[standard]
 python-jose
 passlib
 email-validator
+pypdf
+python-multipart
