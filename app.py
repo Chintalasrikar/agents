@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+﻿from datetime import datetime, timedelta, timezone
 import logging
 import os
 
@@ -41,6 +41,7 @@ JWT_EXP_HOURS = int(os.getenv("JWT_EXP_HOURS", "24"))
 origins = os.getenv("CORS_ORIGINS", "http://localhost:4200,http://127.0.0.1:4200")
 app.add_middleware(
     CORSMiddleware,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_origins=[o.strip() for o in origins.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
