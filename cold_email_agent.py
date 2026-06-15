@@ -156,7 +156,8 @@ def save_uploaded_resume_to_folder(user_email: str, filename: str, pdf_bytes: by
     destination_dir = ensure_resume_dir()
     destination_path = destination_dir / source_name
     destination_path.write_bytes(pdf_bytes)
-    return str(destination_path)
+    # Return path with forward slashes for cross-platform compatibility
+    return str(destination_path).replace("\\", "/")
 
 
 def save_resume_to_folder(user_email: str, source_pdf_path: str) -> str:
@@ -168,7 +169,8 @@ def save_resume_to_folder(user_email: str, source_pdf_path: str) -> str:
     destination_dir = ensure_resume_dir()
     destination_path = destination_dir / source_path.name
     shutil.copy2(source_path, destination_path)
-    return str(destination_path)
+    # Return path with forward slashes for cross-platform compatibility
+    return str(destination_path).replace("\\", "/")
 
 
 def extract_resume_text_from_pdf(pdf_bytes: bytes) -> str:
@@ -184,7 +186,9 @@ def extract_resume_text_from_pdf(pdf_bytes: bytes) -> str:
 
 
 def load_resume_text_from_path(pdf_path: str) -> str:
-    path = Path(pdf_path).expanduser().resolve()
+    # Normalize path separators for cross-platform compatibility
+    normalized_path = pdf_path.replace("\\", "/")
+    path = Path(normalized_path).expanduser().resolve()
     if not path.exists():
         raise ValueError(f"Resume file not found: {path}")
     if path.suffix.lower() != ".pdf":
